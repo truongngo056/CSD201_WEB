@@ -1,0 +1,220 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --border: #e2e8f0;
+  --ring: #3b82f6;
+  --aurora-1: rgba(56, 189, 248, 0.25);
+  --aurora-2: rgba(168, 85, 247, 0.2);
+  --aurora-3: rgba(244, 114, 182, 0.18);
+}
+
+.dark {
+  --background: #030712;
+  --foreground: #f1f5f9;
+  --card: #0f172a;
+  --card-foreground: #f1f5f9;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --border: #1e293b;
+  --ring: #60a5fa;
+  --aurora-1: rgba(56, 189, 248, 0.12);
+  --aurora-2: rgba(168, 85, 247, 0.12);
+  --aurora-3: rgba(244, 114, 182, 0.1);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  min-height: 100vh;
+}
+
+/* Aurora background */
+.aurora-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.aurora-bg::before,
+.aurora-bg::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  animation: aurora-float 12s ease-in-out infinite;
+}
+
+.aurora-bg::before {
+  width: 50%;
+  height: 50%;
+  top: -10%;
+  left: -10%;
+  background: var(--aurora-1);
+}
+
+.aurora-bg::after {
+  width: 45%;
+  height: 45%;
+  bottom: -5%;
+  right: -5%;
+  background: var(--aurora-2);
+  animation-delay: -4s;
+}
+
+.aurora-blob {
+  position: absolute;
+  width: 40%;
+  height: 40%;
+  top: 30%;
+  left: 35%;
+  border-radius: 50%;
+  background: var(--aurora-3);
+  filter: blur(90px);
+  animation: aurora-float 15s ease-in-out infinite reverse;
+}
+
+@keyframes aurora-float {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  33% {
+    transform: translate(30px, -40px) scale(1.08);
+  }
+  66% {
+    transform: translate(-20px, 20px) scale(0.95);
+  }
+}
+
+/* Floating node particles */
+@keyframes float-y {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.float-node {
+  animation: float-y 4s ease-in-out infinite;
+}
+
+.float-node:nth-child(2n) {
+  animation-delay: -1s;
+  animation-duration: 5s;
+}
+
+.float-node:nth-child(3n) {
+  animation-delay: -2s;
+  animation-duration: 3.5s;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--muted-foreground);
+  border-radius: 999px;
+  opacity: 0.5;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--foreground);
+}
+
+/* Code block */
+.code-block {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* Viz canvas pan area */
+.viz-canvas {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.viz-canvas:active {
+  cursor: grabbing;
+}
+
+/* Glass card */
+.glass {
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+}
+
+/* Progress bar shimmer */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.progress-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.35),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
