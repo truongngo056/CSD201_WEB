@@ -71,15 +71,104 @@ const REDUNDANT_NODE_LABELS = new Set([
 /** Preferred offset of pointer chip relative to target node center */
 const POINTER_OFFSET: Record<string, { dx: number; dy: number }> = {
   head: { dx: 0, dy: -90 },
-  tail: { dx: 54, dy: -90 },
+  tail: { dx: 0, dy: -90 },
+  "head/tail": { dx: 0, dy: -90 },
   curr: { dx: -54, dy: -90 },
   prev: { dx: 54, dy: -120 },
   newnode: { dx: 0, dy: -90 },
-  top: { dx: -80, dy: 0 },
-  front: { dx: -15, dy: -90 },
-  rear: { dx: 15, dy: -90 },
+  // Stack: chip sits to the RIGHT of the top drawer; arrow points left into it
+  top: { dx: 118, dy: 0 },
+  front: { dx: 0, dy: -90 },
+  rear: { dx: 0, dy: -90 },
+  "front/rear": { dx: 0, dy: -90 },
   value: { dx: 0, dy: -70 },
 };
+
+/** Structural endpoint pairs — merge into one chip when they share a target */
+const STRUCTURAL_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ["head", "tail"],
+  ["front", "rear"],
+];
+
+/**
+ * Prepare pointer chips for display:
+ * - Never show node values on the chip (name only; arrow points at the node)
+ * - head+tail (or front+rear) on the same target → one combined label
+ * - Stable ids so chips fly to the new node on update
+ */
+function preparePointers(pointers: VizPointer[]): VizPointer[] {
+  const byName = new Map<string, VizPointer>();
+  for (const p of pointers) {
+    byName.set(p.name.toLowerCase().replace(/\s+/g, ""), p);
+  }
+
+  const used = new Set<string>();
+  const result: VizPointer[] = [];
+
+  for (const [a, b] of STRUCTURAL_PAIRS) {
+    const pa = byName.get(a);
+    const pb = byName.get(b);
+    if (!pa || !pb) continue;
+
+    used.add(pa.id);
+    used.add(pb.id);
+
+    const sameTarget = pa.targetId === pb.targetId;
+    if (sameTarget) {
+      // One chip only: "head/tail" or "front/rear"
+      // Keep `pa.id` (head/front) stable so the chip flies on later updates
+      const midX =
+        pa.x !== undefined && pb.x !== undefined
+          ? (pa.x + pb.x) / 2
+          : pa.x ?? pb.x;
+      const midY =
+        pa.y !== undefined && pb.y !== undefined
+          ? Math.min(pa.y, pb.y)
+          : pa.y ?? pb.y;
+      result.push({
+        id: pa.id,
+        name: `${a}/${b}`,
+        targetId: pa.targetId,
+        x: midX,
+        y: midY,
+        highlighted: Boolean(pa.highlighted || pb.highlighted),
+      });
+    } else {
+      // Separate chips — name only, no value; each flies to its target
+      result.push({
+        id: pa.id,
+        name: a,
+        targetId: pa.targetId,
+        x: pa.x,
+        y: pa.y,
+        highlighted: pa.highlighted,
+      });
+      result.push({
+        id: pb.id,
+        name: b,
+        targetId: pb.targetId,
+        x: pb.x,
+        y: pb.y,
+        highlighted: pb.highlighted,
+      });
+    }
+  }
+
+  for (const p of pointers) {
+    if (used.has(p.id)) continue;
+    // Name only — arrow points at the node; no "=value" on the chip
+    result.push({
+      id: p.id,
+      name: p.name,
+      targetId: p.targetId,
+      x: p.x,
+      y: p.y,
+      highlighted: p.highlighted,
+    });
+  }
+
+  return result;
+}
 
 function shouldShowNodeLabel(label: string | undefined, pointers: VizPointer[]) {
   if (!label) return false;
@@ -175,6 +264,118 @@ function AnimatedNode({
   const isGhost = n.role === "ghost" || n.fading;
   const isRemoved = n.role === "removed";
   const memAddr = getMemAddr(n.id, n.value);
+
+  // ── Stack wardrobe drawer (tủ quần áo) ──
+  if (n.role === "slot" || (isNew && n.sublabel === "↓ push")) {
+    const w = 118;
+    const h = 42;
+    const fill = isRemoved
+      ? "#64748b"
+      : isNew
+        ? "#f59e0b"
+        : active
+          ? theme.fill
+          : `${theme.fill}dd`;
+    return (
+      <motion.g
+        initial={{ opacity: 0, scale: 0.6, x, y }}
+        animate={{
+          opacity: isGhost || isRemoved ? 0.35 : 1,
+          scale: isHovered ? 1.04 : 1,
+          x,
+          y,
+        }}
+        exit={{ opacity: 0, scale: 0.5, y: y - 20 }}
+        transition={FLY}
+        style={{ originX: "0px", originY: "0px", cursor: "pointer" }}
+        onMouseEnter={() => onHover?.(n.id)}
+        onMouseLeave={() => onHover?.(null)}
+      >
+        {/* Drawer body */}
+        <rect
+          x={-w / 2}
+          y={-h / 2}
+          width={w}
+          height={h}
+          rx={7}
+          fill={fill}
+          stroke={active || isNew || isHovered ? "#fbbf24" : theme.stroke}
+          strokeWidth={active || isNew || isHovered ? 2.5 : 1.75}
+          filter={active || isHovered ? "url(#glow)" : undefined}
+        />
+        {/* 3D top lip */}
+        <rect
+          x={-w / 2 + 3}
+          y={-h / 2 + 3}
+          width={w - 6}
+          height={8}
+          rx={3}
+          fill="white"
+          opacity={0.12}
+        />
+        {/* Drawer handle */}
+        <rect
+          x={-18}
+          y={-h / 2 + 5}
+          width={36}
+          height={5}
+          rx={2.5}
+          fill={active || isNew ? "#fde68a" : theme.glow}
+          opacity={0.85}
+        />
+        {/* Value */}
+        <text
+          x={0}
+          y={8}
+          textAnchor="middle"
+          fill="white"
+          fontSize={15}
+          fontWeight={800}
+          fontFamily="var(--font-geist-sans), system-ui"
+        >
+          {n.value}
+        </text>
+        {/* Index badge on left */}
+        {n.sublabel && n.sublabel !== "↓ push" && (
+          <text
+            x={-w / 2 - 6}
+            y={4}
+            textAnchor="end"
+            fill={active ? "#fbbf24" : theme.stroke}
+            fontSize={10}
+            fontWeight={700}
+            fontFamily="ui-monospace, monospace"
+          >
+            {n.sublabel}
+          </text>
+        )}
+        {n.sublabel === "↓ push" && (
+          <text
+            x={0}
+            y={h / 2 + 14}
+            textAnchor="middle"
+            fill="#fbbf24"
+            fontSize={10}
+            fontWeight={700}
+          >
+            ↓ push
+          </text>
+        )}
+        {shouldShowNodeLabel(n.label, pointers) && (
+          <text
+            x={0}
+            y={-h / 2 - 10}
+            textAnchor="middle"
+            fill="#fbbf24"
+            fontSize={10}
+            fontWeight={800}
+          >
+            {n.label}
+          </text>
+        )}
+      </motion.g>
+    );
+  }
 
   if (isNullNode(n)) {
     return (
@@ -419,16 +620,242 @@ function AnimatedNode({
   );
 }
 
+/** Wardrobe frame for stack — open top, side walls, floor (tủ quần áo) */
+function StackWardrobe({
+  cabinet,
+  theme,
+  size,
+}: {
+  cabinet: {
+    cx: number;
+    baseY: number;
+    slotH: number;
+    slotW: number;
+    slots: number;
+    left: number;
+    right: number;
+    bottom: number;
+    top: number;
+  };
+  theme: (typeof THEME_COLORS)[ColorTheme];
+  size: number;
+}) {
+  const { left, right, top, bottom, slotH, baseY, slots, cx, slotW } = cabinet;
+  const wall = 14;
+  const innerL = left + wall;
+  const innerR = right - wall;
+
+  return (
+    <g opacity={0.95}>
+      {/* Outer body */}
+      <rect
+        x={left}
+        y={top}
+        width={right - left}
+        height={bottom - top}
+        rx={10}
+        fill="#0f172a"
+        stroke={theme.stroke}
+        strokeWidth={2.5}
+        opacity={0.92}
+      />
+      {/* Inner cavity */}
+      <rect
+        x={innerL}
+        y={top + 10}
+        width={innerR - innerL}
+        height={bottom - top - 28}
+        rx={4}
+        fill="#020617"
+        stroke={theme.muted}
+        strokeWidth={1}
+        opacity={0.85}
+      />
+      {/* Open top lip (mouth of wardrobe) */}
+      <path
+        d={`M ${left + 4} ${top + 8}
+            L ${left + 18} ${top - 14}
+            L ${right - 18} ${top - 14}
+            L ${right - 4} ${top + 8} Z`}
+        fill={theme.fill}
+        opacity={0.35}
+        stroke={theme.stroke}
+        strokeWidth={1.5}
+      />
+      <text
+        x={cx}
+        y={top - 22}
+        textAnchor="middle"
+        fill={theme.glow}
+        fontSize={10}
+        fontWeight={700}
+        fontFamily="ui-monospace, monospace"
+      >
+        OPEN TOP · push / pop
+      </text>
+      {/* Empty shelf guides */}
+      {Array.from({ length: slots }).map((_, i) => {
+        const y = baseY - i * slotH;
+        const filled = i < size;
+        if (filled) return null;
+        return (
+          <line
+            key={`shelf-${i}`}
+            x1={cx - slotW / 2 + 6}
+            y1={y + slotH / 2 - 4}
+            x2={cx + slotW / 2 - 6}
+            y2={y + slotH / 2 - 4}
+            stroke={theme.stroke}
+            strokeWidth={1}
+            strokeDasharray="4 5"
+            opacity={0.25}
+          />
+        );
+      })}
+      {/* Floor plank */}
+      <rect
+        x={left + 6}
+        y={bottom - 18}
+        width={right - left - 12}
+        height={12}
+        rx={3}
+        fill={theme.fill}
+        opacity={0.45}
+      />
+      <text
+        x={cx}
+        y={bottom + 16}
+        textAnchor="middle"
+        fill={theme.stroke}
+        fontSize={10}
+        fontWeight={700}
+        opacity={0.8}
+      >
+        👕 tủ · LIFO
+      </text>
+      {/* Left door hinge decoration */}
+      <circle cx={left + 7} cy={(top + bottom) / 2 - 40} r={3} fill={theme.glow} opacity={0.5} />
+      <circle cx={left + 7} cy={(top + bottom) / 2 + 40} r={3} fill={theme.glow} opacity={0.5} />
+      {/* Right door hinge */}
+      <circle cx={right - 7} cy={(top + bottom) / 2 - 40} r={3} fill={theme.glow} opacity={0.5} />
+      <circle cx={right - 7} cy={(top + bottom) / 2 + 40} r={3} fill={theme.glow} opacity={0.5} />
+    </g>
+  );
+}
+
+/**
+ * Soft quadratic arc.
+ * - bowMode "perp": offset along edge perpendicular (signed by `bow`)
+ * - bowMode "outward": push control point away from polygon center
+ */
+function curvedEdgePath(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  bow: number,
+  center?: { x: number; y: number } | null
+): { d: string; cx: number; cy: number } {
+  const mx = (fromX + toX) / 2;
+  const my = (fromY + toY) / 2;
+
+  if (center) {
+    let ox = mx - center.x;
+    let oy = my - center.y;
+    let olen = Math.hypot(ox, oy);
+    // 2-node case: midpoint sits on center → fall back to vertical bow
+    if (olen < 4) {
+      ox = 0;
+      oy = bow >= 0 ? 1 : -1;
+      olen = 1;
+    }
+    const amt = Math.abs(bow);
+    const cx = mx + (ox / olen) * amt;
+    const cy = my + (oy / olen) * amt;
+    return {
+      d: `M ${fromX} ${fromY} Q ${cx} ${cy} ${toX} ${toY}`,
+      cx,
+      cy,
+    };
+  }
+
+  const dx = toX - fromX;
+  const dy = toY - fromY;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy / len;
+  const py = dx / len;
+  const cx = mx + px * bow;
+  const cy = my + py * bow;
+  return {
+    d: `M ${fromX} ${fromY} Q ${cx} ${cy} ${toX} ${toY}`,
+    cx,
+    cy,
+  };
+}
+
+function EdgeLabelPill({
+  x,
+  y,
+  text,
+  stroke,
+  themeStroke,
+  hl,
+}: {
+  x: number;
+  y: number;
+  text: string;
+  stroke: string;
+  themeStroke: string;
+  hl: boolean;
+}) {
+  const w = Math.max(32, text.length * 6.5 + 8);
+  return (
+    <g>
+      <motion.rect
+        initial={false}
+        animate={{ x: x - w / 2, y: y - 7 }}
+        transition={FLY_FAST}
+        width={w}
+        height={14}
+        rx={4}
+        fill="#0f172a"
+        opacity={0.9}
+        stroke={hl ? "#fbbf24" : themeStroke}
+        strokeWidth={0.75}
+      />
+      <motion.text
+        initial={false}
+        animate={{ x, y: y + 1 }}
+        transition={FLY_FAST}
+        textAnchor="middle"
+        dominantBaseline="middle"
+        fill={hl ? "#fbbf24" : stroke}
+        fontSize={9}
+        fontWeight={hl ? 700 : 600}
+        fontFamily="ui-monospace, monospace"
+      >
+        {text}
+      </motion.text>
+    </g>
+  );
+}
+
 function AnimatedEdge({
   e,
   from,
   to,
   theme,
+  curved = false,
+  center = null,
 }: {
   e: VizEdge;
   from: VizNode;
   to: VizNode;
   theme: (typeof THEME_COLORS)[ColorTheme];
+  /** Circular list: soft arcs so edges don't overlap */
+  curved?: boolean;
+  /** Polygon center — bow edges outward */
+  center?: { x: number; y: number } | null;
 }) {
   const x1 = from.x ?? 0;
   const y1 = from.y ?? 0;
@@ -446,12 +873,23 @@ function AnimatedEdge({
         ? `${theme.stroke}99`
         : theme.stroke;
 
-  if (isLoop) {
-    const mx = (x1 + x2) / 2;
-    const my = Math.max(y1, y2) + 70;
-    const d = `M ${x1 + 28} ${y1 + 10} Q ${mx} ${my} ${x2 - 28} ${y2 + 10}`;
-    const loopLabel = e.label ?? "next → HEAD";
-    const loopPillW = Math.max(50, loopLabel.length * 6.5 + 8);
+  const rFrom = isNullNode(from) ? 20 : from.role === "slot" ? 22 : 28;
+  const rTo = isNullNode(to) ? 20 : to.role === "slot" ? 22 : 28;
+  const marker = hl
+    ? "url(#arrow-amber)"
+    : isPtr
+      ? "url(#arrow-ptr)"
+      : "url(#arrow)";
+
+  // ── 1-node circular self-loop: below node (head/tail chip sits above) ──
+  if (isLoop && Math.hypot(x2 - x1, y2 - y1) < 8) {
+    const drop = 58;
+    const sx = x1 + rFrom * 0.55;
+    const sy = y1 + rFrom * 0.75;
+    const ex = x1 - rFrom * 0.55;
+    const ey = y1 + rFrom * 0.75;
+    const d = `M ${sx} ${sy} C ${x1 + 54} ${y1 + drop + 28}, ${x1 - 54} ${y1 + drop + 28}, ${ex} ${ey}`;
+    const loopLabel = e.label ?? "next → self";
     return (
       <g>
         <motion.path
@@ -460,60 +898,25 @@ function AnimatedEdge({
           stroke={stroke}
           strokeWidth={hl ? 3 : 2}
           strokeDasharray={e.dashed || !hl ? "6 4" : "0"}
-          markerEnd={hl ? "url(#arrow-hl)" : "url(#arrow)"}
+          markerEnd={marker}
           opacity={0.9}
           initial={false}
           animate={{ d }}
           transition={FLY_FAST}
-        >
-          {hl && (
-            <animate
-              attributeName="stroke-opacity"
-              values="0.4;1;0.4"
-              dur="1s"
-              repeatCount="indefinite"
-            />
-          )}
-        </motion.path>
-        <g>
-          <motion.rect
-            initial={false}
-            animate={{
-              x: mx - loopPillW / 2,
-              y: my - 15,
-            }}
-            transition={FLY_FAST}
-            width={loopPillW}
-            height={15}
-            rx={4}
-            fill="#0f172a"
-            opacity={0.9}
-            stroke={hl ? "#fbbf24" : theme.stroke}
-            strokeWidth={0.75}
-          />
-          <motion.text
-            initial={false}
-            animate={{ x: mx, y: my - 7 }}
-            transition={FLY_FAST}
-            textAnchor="middle"
-            dominantBaseline="middle"
-            fill={stroke}
-            fontSize={9}
-            fontWeight={600}
-            fontFamily="ui-monospace, monospace"
-          >
-            {loopLabel}
-          </motion.text>
-        </g>
+        />
+        <EdgeLabelPill
+          x={x1}
+          y={y1 + drop + 36}
+          text={loopLabel}
+          stroke={stroke}
+          themeStroke={theme.stroke}
+          hl={!!hl}
+        />
       </g>
     );
   }
 
   const isHorizontal = Math.abs(y1 - y2) < 15;
-
-  const rFrom = isNullNode(from) ? 20 : from.role === "slot" ? 22 : 28;
-  const rTo = isNullNode(to) ? 20 : to.role === "slot" ? 22 : 28;
-
   const deltaX = x2 - x1;
   const deltaY = y2 - y1;
   const angle = Math.atan2(deltaY, deltaX);
@@ -537,75 +940,116 @@ function AnimatedEdge({
     toY += perpY;
   }
 
+  // Decide curve
+  let curve: { d: string; cx: number; cy: number } | null = null;
+
+  if (curved || isLoop) {
+    const span = Math.hypot(x2 - x1, y2 - y1);
+    const bowAmt = Math.max(22, Math.min(48, 16 + span * 0.08));
+
+    if (isHorizontal && isLoop) {
+      // 2-node: return edge bows DOWN so it doesn't stack on next
+      curve = {
+        d: `M ${fromX} ${fromY} Q ${(fromX + toX) / 2} ${(fromY + toY) / 2 + bowAmt + 10} ${toX} ${toY}`,
+        cx: (fromX + toX) / 2,
+        cy: (fromY + toY) / 2 + bowAmt + 10,
+      };
+    } else if (isHorizontal && curved && !isLoop) {
+      // 2-node: forward next bows UP
+      curve = {
+        d: `M ${fromX} ${fromY} Q ${(fromX + toX) / 2} ${(fromY + toY) / 2 - bowAmt} ${toX} ${toY}`,
+        cx: (fromX + toX) / 2,
+        cy: (fromY + toY) / 2 - bowAmt,
+      };
+    } else {
+      // Triangle / diamond / pentagon… — bow outward from polygon center
+      curve = curvedEdgePath(fromX, fromY, toX, toY, bowAmt, center);
+    }
+  } else if (isPrev && isHorizontal) {
+    const cx = (fromX + toX) / 2;
+    const cy = (fromY + toY) / 2 + 22;
+    curve = {
+      d: `M ${fromX} ${fromY} Q ${cx} ${cy} ${toX} ${toY}`,
+      cx,
+      cy,
+    };
+  } else if (isPrev) {
+    curve = curvedEdgePath(fromX, fromY, toX, toY, 18);
+  }
+
   const midX = (fromX + toX) / 2;
   const midY = (fromY + toY) / 2;
-  const labelY = isHorizontal
-    ? isPrev
-      ? fromY + 16
-      : fromY - 14
-    : midY - 12;
-
   const labelText = e.label;
-  const pillWidth = labelText ? Math.max(32, labelText.length * 6.5 + 8) : 0;
+  const labelX = curve ? (midX + curve.cx) / 2 : midX;
+  const labelY = curve
+    ? (midY + curve.cy) / 2
+    : isHorizontal
+      ? isPrev
+        ? fromY + 24
+        : fromY - 14
+      : midY - 12;
 
   return (
     <g>
-      <motion.line
-        initial={false}
-        animate={{ x1: fromX, y1: fromY, x2: toX, y2: toY }}
-        transition={FLY_FAST}
-        stroke={stroke}
-        strokeWidth={hl ? 3 : isPrev ? 1.5 : 2}
-        strokeDasharray={e.dashed || isPrev ? "5 3" : undefined}
-        markerEnd={
-          hl
-            ? "url(#arrow-amber)"
-            : isPtr
-              ? "url(#arrow-ptr)"
-              : "url(#arrow)"
-        }
-        opacity={isPrev ? 0.75 : 0.95}
-      >
-        {e.animated && (
-          <animate
-            attributeName="stroke-opacity"
-            values="0.35;1;0.35"
-            dur="0.8s"
-            repeatCount="indefinite"
-          />
-        )}
-      </motion.line>
+      {curve ? (
+        <motion.path
+          initial={false}
+          animate={{ d: curve.d }}
+          transition={FLY_FAST}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={hl ? 3 : isPrev ? 1.5 : 2}
+          strokeDasharray={e.dashed || isPrev ? "5 3" : isLoop && !hl ? "6 4" : undefined}
+          markerEnd={marker}
+          opacity={isPrev ? 0.75 : 0.95}
+        >
+          {(e.animated || hl) && isLoop && (
+            <animate
+              attributeName="stroke-opacity"
+              values="0.4;1;0.4"
+              dur="1s"
+              repeatCount="indefinite"
+            />
+          )}
+          {e.animated && !isLoop && (
+            <animate
+              attributeName="stroke-opacity"
+              values="0.35;1;0.35"
+              dur="0.8s"
+              repeatCount="indefinite"
+            />
+          )}
+        </motion.path>
+      ) : (
+        <motion.line
+          initial={false}
+          animate={{ x1: fromX, y1: fromY, x2: toX, y2: toY }}
+          transition={FLY_FAST}
+          stroke={stroke}
+          strokeWidth={hl ? 3 : isPrev ? 1.5 : 2}
+          strokeDasharray={e.dashed || isPrev ? "5 3" : undefined}
+          markerEnd={marker}
+          opacity={isPrev ? 0.75 : 0.95}
+        >
+          {e.animated && (
+            <animate
+              attributeName="stroke-opacity"
+              values="0.35;1;0.35"
+              dur="0.8s"
+              repeatCount="indefinite"
+            />
+          )}
+        </motion.line>
+      )}
       {labelText && (
-        <g>
-          <motion.rect
-            initial={false}
-            animate={{
-              x: midX - pillWidth / 2,
-              y: labelY - 7,
-            }}
-            transition={FLY_FAST}
-            width={pillWidth}
-            height={14}
-            rx={4}
-            fill="#0f172a"
-            opacity={0.9}
-            stroke={hl ? "#fbbf24" : theme.stroke}
-            strokeWidth={0.75}
-          />
-          <motion.text
-            initial={false}
-            animate={{ x: midX, y: labelY + 1 }}
-            transition={FLY_FAST}
-            textAnchor="middle"
-            dominantBaseline="middle"
-            fill={hl ? "#fbbf24" : theme.stroke}
-            fontSize={9}
-            fontWeight={hl ? 700 : 600}
-            fontFamily="ui-monospace, monospace"
-          >
-            {labelText}
-          </motion.text>
-        </g>
+        <EdgeLabelPill
+          x={labelX}
+          y={labelY}
+          text={labelText}
+          stroke={stroke}
+          themeStroke={theme.stroke}
+          hl={!!hl}
+        />
       )}
     </g>
   );
@@ -621,16 +1065,22 @@ function AnimatedPointerLine({
   pos: { x: number; y: number };
 }) {
   const nx = node.x ?? 0;
-  const ny = (node.y ?? 0) - 30;
+  const ny = node.y ?? 0;
+  const name = p.name.toLowerCase().replace(/\s+/g, "");
+  // top: horizontal from RIGHT → into the drawer’s right edge
+  const isTopSide = name === "top";
+  const x1 = isTopSide ? pos.x - 28 : pos.x;
+  const y1 = isTopSide ? pos.y : pos.y + 14;
+  // slot drawers ~118 wide → hit right side; circles hit top
+  const x2 = isTopSide
+    ? nx + (node.role === "slot" || node.role === "new" ? 62 : 30)
+    : nx;
+  const y2 = isTopSide ? ny : ny - 30;
+
   return (
     <motion.line
       initial={false}
-      animate={{
-        x1: pos.x,
-        y1: pos.y + 14,
-        x2: nx,
-        y2: ny,
-      }}
+      animate={{ x1, y1, x2, y2 }}
       transition={FLY}
       stroke={p.highlighted ? "#fbbf24" : "#a78bfa"}
       strokeWidth={p.highlighted ? 2.5 : 1.5}
@@ -648,9 +1098,9 @@ function AnimatedPointerChip({
   p: VizPointer;
   pos: { x: number; y: number };
 }) {
-  const label =
-    p.display !== undefined ? `${p.name}=${p.display}` : p.name;
-  const w = Math.max(58, label.length * 7.2 + 14);
+  // Label is name only (head / tail / front / rear) — no node value
+  const label = p.name;
+  const w = Math.max(52, label.length * 7.4 + 16);
   const h = 26;
 
   return (
@@ -889,12 +1339,43 @@ export function StructureCanvas({ state, color, kind }: StructureCanvasProps) {
     drag.current = null;
   };
 
+  const meta = state.meta as
+    | {
+        kind?: string;
+        centerX?: number;
+        centerY?: number;
+        size?: number;
+        cabinet?: {
+          cx: number;
+          baseY: number;
+          slotH: number;
+          slotW: number;
+          slots: number;
+          left: number;
+          right: number;
+          bottom: number;
+          top: number;
+        };
+      }
+    | undefined;
+
   const isStack =
     kind === "stacks" ||
-    (!state.edges.length && state.meta && "top" in (state.meta as object));
+    meta?.kind === "stack" ||
+    (!state.edges.length && state.meta && "top" in (state.meta as object) && meta?.cabinet);
+
+  const isCircular =
+    kind === "circularly-linked-lists" || meta?.kind === "circular";
+  const polyCenter =
+    isCircular && meta?.centerX != null && meta?.centerY != null
+      ? { x: meta.centerX, y: meta.centerY }
+      : isCircular
+        ? { x: 360, y: 130 + 160 } // fallback near head-anchored layout
+        : null;
 
   const nodeMap = new Map(state.nodes.map((n) => [n.id, n]));
-  const pointers = state.pointers ?? [];
+  // Structural chips: name-only, merge head/tail or front/rear when same target
+  const pointers = preparePointers(state.pointers ?? []);
   const pointerPos = computePointerPositions(pointers, nodeMap);
 
   const resolvedPtr = pointers.map((p) => pointerPos.get(p.id)!).filter(Boolean);
@@ -905,8 +1386,16 @@ export function StructureCanvas({ state, color, kind }: StructureCanvasProps) {
   const annXs = (state.annotations ?? []).map((a) => a.x);
   const annYs = (state.annotations ?? []).map((a) => a.y);
 
-  const allX = [...xs, ...ptrXs, ...annXs];
-  const allY = [...ys, ...ptrYs, ...annYs];
+  // Include wardrobe bounds so the cabinet is fully visible
+  const cabXs = meta?.cabinet
+    ? [meta.cabinet.left, meta.cabinet.right]
+    : [];
+  const cabYs = meta?.cabinet
+    ? [meta.cabinet.top - 30, meta.cabinet.bottom + 24]
+    : [];
+
+  const allX = [...xs, ...ptrXs, ...annXs, ...cabXs];
+  const allY = [...ys, ...ptrYs, ...annYs, ...cabYs];
   const minX = allX.length ? Math.min(...allX) - 120 : 0;
   const maxX = allX.length ? Math.max(...allX) + 140 : 600;
   const minY = allY.length ? Math.min(...allY) - 80 : 0;
@@ -1035,6 +1524,15 @@ export function StructureCanvas({ state, color, kind }: StructureCanvasProps) {
           <g
             transform={`translate(${transform.x / transform.k}, ${transform.y / transform.k}) scale(${transform.k})`}
           >
+            {/* Stack wardrobe shell (behind drawers) */}
+            {isStack && meta?.cabinet && (
+              <StackWardrobe
+                cabinet={meta.cabinet}
+                theme={theme}
+                size={typeof meta.size === "number" ? meta.size : 0}
+              />
+            )}
+
             {/* Pointer → node connectors (fly with chip + node) */}
             {pointers.map((p) => {
               if (!p.targetId || !nodeMap.has(p.targetId)) return null;
@@ -1051,7 +1549,7 @@ export function StructureCanvas({ state, color, kind }: StructureCanvasProps) {
               );
             })}
 
-            {/* Edges */}
+            {/* Edges — circular polygon uses soft outward arcs */}
             {state.edges.map((e) => {
               const from = nodeMap.get(e.from);
               const to = nodeMap.get(e.to);
@@ -1063,6 +1561,8 @@ export function StructureCanvas({ state, color, kind }: StructureCanvasProps) {
                   from={from}
                   to={to}
                   theme={theme}
+                  curved={isCircular && e.type !== "pointer"}
+                  center={polyCenter}
                 />
               );
             })}
@@ -1112,36 +1612,6 @@ export function StructureCanvas({ state, color, kind }: StructureCanvasProps) {
                 <AnimatedAnnotation key={a.id} a={a} />
               ))}
             </AnimatePresence>
-
-            {/* Stack base */}
-            {(isStack || kind === "stacks") &&
-              state.nodes.filter((n) => n.role !== "null" && n.role !== "new")
-                .length > 0 && (
-                <motion.line
-                  initial={false}
-                  animate={{
-                    x1: 160,
-                    y1:
-                      Math.max(
-                        ...state.nodes
-                          .filter((n) => n.role !== "null")
-                          .map((n) => n.y ?? 0)
-                      ) + 40,
-                    x2: 240,
-                    y2:
-                      Math.max(
-                        ...state.nodes
-                          .filter((n) => n.role !== "null")
-                          .map((n) => n.y ?? 0)
-                      ) + 40,
-                  }}
-                  transition={FLY_FAST}
-                  stroke={theme.stroke}
-                  strokeWidth={3}
-                  strokeLinecap="round"
-                  opacity={0.5}
-                />
-              )}
           </g>
         </svg>
 

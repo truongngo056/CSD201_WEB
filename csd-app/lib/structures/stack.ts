@@ -2,6 +2,7 @@ import type {
   AnimationStep,
   VisualizationState,
   VizNode,
+  VizEdge,
   VizPointer,
   VizAnnotation,
   VizAction,
@@ -13,6 +14,54 @@ import {
   step,
   v,
 } from "./animation-helpers";
+
+/** Wardrobe (tủ quần áo) geometry — open top, stack grows upward from the floor */
+const STACK_CX = 300;
+const STACK_SLOT_W = 128;
+/** Center-to-center spacing — large enough that next arrows between 2 nodes stay clear */
+const STACK_SLOT_H = 88;
+const STACK_BASE_Y = 400; // center Y of bottom drawer (index 0)
+/** Visual drawer half-height (matches canvas drawer h≈42) */
+const DRAWER_HALF = 22;
+
+function slotY(index: number) {
+  return STACK_BASE_Y - index * STACK_SLOT_H;
+}
+
+/**
+ * Cabinet height tracks node count:
+ * - empty → short wardrobe (2 shelf guides)
+ * - n nodes → n slots + 1 headroom for push + room for next→null
+ */
+function cabinetSlots(size: number) {
+  if (size <= 0) return 2;
+  return size + 1;
+}
+
+function cabinetMeta(size: number) {
+  const slots = cabinetSlots(size);
+  // Top of cabinet sits above the highest shelf / open mouth
+  const topCenter = STACK_BASE_Y - (slots - 1) * STACK_SLOT_H;
+  return {
+    kind: "stack" as const,
+    size,
+    top: null as number | null,
+    topIndex: size - 1,
+    cabinet: {
+      cx: STACK_CX,
+      baseY: STACK_BASE_Y,
+      slotH: STACK_SLOT_H,
+      slotW: STACK_SLOT_W,
+      slots,
+      left: STACK_CX - STACK_SLOT_W / 2 - 24,
+      right: STACK_CX + STACK_SLOT_W / 2 + 24,
+      // Floor + space for next→null under bottom drawer
+      bottom: STACK_BASE_Y + DRAWER_HALF + 56,
+      // Open mouth above topmost shelf
+      top: topCenter - DRAWER_HALF - 40,
+    },
+  };
+}
 
 export class StackEngine {
   items: number[] = [];
@@ -39,103 +88,124 @@ export class StackEngine {
     );
   }
 
-  private frame(opts: {
-    highlightTop?: boolean;
-    floating?: { value: number; label?: string };
-    action?: VizAction;
-    annotations?: VizAnnotation[];
-    popping?: number;
-  } = {}): VisualizationState {
+  private frame(
+    opts: {
+      highlightTop?: boolean;
+      floating?: { value: number; label?: string };
+      action?: VizAction;
+      annotations?: VizAnnotation[];
+      popping?: number;
+    } = {}
+  ): VisualizationState {
     const nodes: VizNode[] = this.items.map((val, i) => {
       const isTop = i === this.items.length - 1;
       return {
         id: `s${i}`,
         value: val,
-        x: 240,
-        y: 320 - i * 62,
+        x: STACK_CX,
+        y: slotY(i),
         highlighted: (opts.highlightTop && isTop) || opts.popping === val,
         active: (opts.highlightTop && isTop) || opts.popping === val,
-        // TOP shown via pointer chip only — avoid badge overlap
         label: undefined,
-        sublabel: isTop ? `stack[${i}]` : `stack[${i}]`,
-        role: opts.popping === val && isTop ? "removed" : "normal",
+        sublabel: `[${i}]`,
+        role:
+          opts.popping === val && isTop
+            ? "removed"
+            : ("slot" as const),
       };
     });
 
+    // Linked-stack next chain: top → … → bottom → null
+    // Array index i points “down” to i-1 (toward floor of wardrobe)
+    const edges: VizEdge[] = [];
+    for (let i = this.items.length - 1; i > 0; i--) {
+      edges.push({
+        id: `e-next-${i}`,
+        from: `s${i}`,
+        to: `s${i - 1}`,
+        type: "next",
+        label: "next",
+        highlighted: opts.highlightTop && i === this.items.length - 1,
+      });
+    }
+
     const pointers: VizPointer[] = [];
     const annotations = [...(opts.annotations ?? [])];
+    const meta = cabinetMeta(this.items.length);
+    meta.top = this.items[this.items.length - 1] ?? null;
+    meta.topIndex = this.topIndex() < 0 ? -1 : this.topIndex();
 
     if (this.items.length === 0) {
-      nodes.push({
-        id: "empty",
-        value: "∅",
-        x: 220,
-        y: 300,
-        role: "null",
-        label: "EMPTY",
-        sublabel: "top = -1",
-        highlighted: true,
-      });
+      // Empty wardrobe — open space, top = -1
       pointers.push({
         id: "ptr-top",
         name: "top",
         targetId: null,
-        x: 220,
-        y: 230,
-        highlighted: true,
-        display: "-1",
-      });
-      annotations.push({
-        id: "ann-empty",
-        text: "top → -1 (null stack)",
-        x: 220,
-        y: 360,
-        kind: "null",
+        x: STACK_CX + STACK_SLOT_W / 2 + 90,
+        y: STACK_BASE_Y - 40,
         highlighted: true,
       });
     } else {
       const topId = `s${this.items.length - 1}`;
+      // top chip on the RIGHT of the top drawer (arrow points left →)
       pointers.push({
         id: "ptr-top",
         name: "top",
         targetId: topId,
         highlighted: !!opts.highlightTop,
-        display: String(this.topIndex()),
+      });
+
+      // Bottom terminator: next → null (below bottom drawer, still inside cabinet floor)
+      const nullY = slotY(0) + DRAWER_HALF + 36;
+      nodes.push({
+        id: "stack-null",
+        value: "∅",
+        x: STACK_CX,
+        y: nullY,
+        role: "null",
+        label: undefined,
+        sublabel: "null",
+        highlighted: false,
+      });
+      edges.push({
+        id: "e-next-null",
+        from: "s0",
+        to: "stack-null",
+        type: "next",
+        label: "next",
+        dashed: true,
       });
     }
 
     if (opts.floating) {
+      // Hover in the open mouth above the future top slot
+      const floatY = slotY(this.items.length) - 8;
       nodes.push({
         id: "float-new",
         value: opts.floating.value,
-        x: 220,
-        y: 40,
+        x: STACK_CX,
+        y: Math.min(floatY, meta.cabinet.top + 18),
         role: "new",
         label: opts.floating.label ?? "NEW",
         active: true,
         highlighted: true,
-        sublabel: "pending push",
+        sublabel: "↓ push",
       });
       pointers.push({
         id: "ptr-new",
         name: "value",
         targetId: "float-new",
         highlighted: true,
-        display: String(opts.floating.value),
       });
     }
 
     return {
       nodes,
-      edges: [],
+      edges,
       pointers,
       annotations,
       action: opts.action,
-      meta: {
-        size: this.items.length,
-        top: this.items[this.items.length - 1] ?? null,
-        topIndex: this.topIndex() < 0 ? -1 : this.topIndex(),
-      },
+      meta,
     };
   }
 
@@ -181,8 +251,8 @@ export class StackEngine {
         vi: `Gọi push(${value})`,
         data: this.frame({
           action: {
-            en: `Enter push(${value})`,
-            vi: `Vào hàm push(${value})`,
+            en: `Enter push(${value}) — put clothes on top of the wardrobe`,
+            vi: `Vào push(${value}) — xếp thêm ngăn lên đỉnh tủ`,
             code: `push(${value})`,
           },
         }),
@@ -202,16 +272,6 @@ export class StackEngine {
             vi: `Kiểm tra dung lượng trước khi ghi`,
             code: `if (top == capacity - 1)`,
           },
-          annotations: [
-            {
-              id: "cap",
-              text: `top=${topBefore} < ${this.capacity - 1}`,
-              x: 220,
-              y: 360,
-              kind: "info",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [1],
         variables: this.vars([
@@ -224,25 +284,15 @@ export class StackEngine {
     steps.push(
       step({
         type: "create",
-        en: `Prepare value ${value} above stack`,
-        vi: `Chuẩn bị giá trị ${value} phía trên stack`,
+        en: `Prepare value ${value} above open top`,
+        vi: `Chuẩn bị giá trị ${value} phía trên miệng tủ`,
         data: this.frame({
           floating: { value, label: "NEW" },
           action: {
-            en: `New element ready to push`,
-            vi: `Phần tử mới sẵn sàng push`,
+            en: `New drawer ready to drop into wardrobe`,
+            vi: `Ngăn mới sẵn sàng thả vào tủ`,
             code: `// stack[++top] = value pending`,
           },
-          annotations: [
-            {
-              id: "new",
-              text: `value = ${value}`,
-              x: 320,
-              y: 40,
-              kind: "assign",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [3],
         variables: this.vars([v("value", value, true)]),
@@ -260,28 +310,10 @@ export class StackEngine {
         data: this.frame({
           highlightTop: true,
           action: {
-            en: `Write to stack[top] and advance top`,
-            vi: `Ghi vào stack[top] và tăng top`,
+            en: `Drop into top drawer · TOP moves up`,
+            vi: `Thả vào ngăn đỉnh · TOP đi lên`,
             code: `stack[++top] = ${value}; // top=${topAfter}`,
           },
-          annotations: [
-            {
-              id: "w",
-              text: `stack[${topAfter}] ← ${value}`,
-              x: 340,
-              y: 300 - topAfter * 58,
-              kind: "assign",
-              highlighted: true,
-            },
-            {
-              id: "t",
-              text: `top: ${topBefore} → ${topAfter}`,
-              x: 100,
-              y: 300 - topAfter * 58,
-              kind: "link",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [3],
         variables: this.vars(
@@ -300,8 +332,8 @@ export class StackEngine {
         data: this.frame({
           highlightTop: true,
           action: {
-            en: `TOP points to ${value}`,
-            vi: `TOP trỏ tới ${value}`,
+            en: `TOP points to uppermost drawer`,
+            vi: `TOP trỏ ngăn trên cùng`,
             code: `// size=${this.items.length}`,
           },
         }),
@@ -322,8 +354,8 @@ export class StackEngine {
         data: this.frame({
           highlightTop: true,
           action: {
-            en: `Enter pop()`,
-            vi: `Vào hàm pop()`,
+            en: `Enter pop() — take clothes from the top only`,
+            vi: `Vào pop() — chỉ lấy ngăn trên cùng`,
             code: `pop()`,
           },
         }),
@@ -339,8 +371,8 @@ export class StackEngine {
         vi: `isEmpty()? → ${this.items.length === 0}`,
         data: this.frame({
           action: {
-            en: `Guard against empty stack`,
-            vi: `Chặn stack rỗng`,
+            en: `Guard against empty wardrobe`,
+            vi: `Chặn tủ rỗng`,
             code: `if (isEmpty()) throw ...`,
           },
         }),
@@ -379,20 +411,10 @@ export class StackEngine {
         data: this.frame({
           highlightTop: true,
           action: {
-            en: `Capture top value before decrement`,
-            vi: `Lấy giá trị top trước khi giảm`,
+            en: `Capture top drawer before removal`,
+            vi: `Lấy ngăn đỉnh trước khi gỡ`,
             code: `return stack[top--]; // ${val}`,
           },
-          annotations: [
-            {
-              id: "rd",
-              text: `returnValue = ${val}`,
-              x: 340,
-              y: 300 - topBefore * 58,
-              kind: "assign",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [3],
         variables: this.vars([v("returnValue", val, true)]),
@@ -407,21 +429,10 @@ export class StackEngine {
         vi: `top = top - 1 → ${this.topIndex() < 0 ? -1 : this.topIndex()}`,
         data: this.frame({
           action: {
-            en: `Remove ${val}; TOP moves down`,
-            vi: `Gỡ ${val}; TOP đi xuống`,
+            en: `Remove top drawer · TOP moves down`,
+            vi: `Gỡ ngăn đỉnh · TOP đi xuống`,
             code: `top--; // removed ${val}`,
           },
-          annotations: [
-            {
-              id: "rm",
-              text: `removed ${val}`,
-              x: 340,
-              y: 80,
-              kind: "warn",
-              highlighted: true,
-            },
-          ],
-          floating: undefined,
         }),
         codeLines: [3],
         variables: this.vars(
@@ -461,8 +472,8 @@ export class StackEngine {
           vi: "Rỗng — không peek được",
           data: this.frame({
             action: {
-              en: `Empty stack`,
-              vi: `Stack rỗng`,
+              en: `Empty wardrobe`,
+              vi: `Tủ rỗng`,
               code: `if (isEmpty()) throw ...`,
             },
           }),
@@ -480,8 +491,8 @@ export class StackEngine {
         data: this.frame({
           highlightTop: true,
           action: {
-            en: `Peek TOP without removal`,
-            vi: `Xem TOP không xóa`,
+            en: `Peek top drawer without removing`,
+            vi: `Xem ngăn đỉnh không gỡ`,
             code: `peek()`,
           },
         }),
@@ -499,16 +510,6 @@ export class StackEngine {
             vi: `TOP vẫn là ${val}`,
             code: `return stack[top]; // ${val}`,
           },
-          annotations: [
-            {
-              id: "pk",
-              text: `TOP = ${val} (unchanged)`,
-              x: 340,
-              y: 300 - this.topIndex() * 58,
-              kind: "info",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [3],
         variables: this.vars([v("return", val, true)]),
@@ -529,16 +530,6 @@ export class StackEngine {
             vi: `So sánh top với -1`,
             code: `return top == -1; // ${empty}`,
           },
-          annotations: [
-            {
-              id: "ie",
-              text: `top == -1 → ${empty}`,
-              x: 220,
-              y: 100,
-              kind: empty ? "null" : "info",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [0, 1],
         variables: this.vars([v("return", empty, true)]),
@@ -574,8 +565,8 @@ export class StackEngine {
         vi: "Gọi clear()",
         data: this.frame({
           action: {
-            en: `Clear stack`,
-            vi: `Xóa stack`,
+            en: `Empty the wardrobe`,
+            vi: `Dọn sạch tủ`,
             code: `clear()`,
           },
         }),
@@ -591,8 +582,8 @@ export class StackEngine {
         vi: "top = -1",
         data: this.frame({
           action: {
-            en: `All slots discarded · top → -1`,
-            vi: `Mọi phần tử bị hủy · top → -1`,
+            en: `All drawers removed · top → -1`,
+            vi: `Mọi ngăn bị gỡ · top → -1`,
             code: `top = -1;`,
           },
         }),
@@ -606,8 +597,8 @@ export class StackEngine {
   currentState(): VisualizationState {
     return this.frame({
       action: {
-        en: "Ready — run an operation",
-        vi: "Sẵn sàng — chạy một thao tác",
+        en: "Ready — push/pop like a wardrobe (LIFO)",
+        vi: "Sẵn sàng — push/pop như tủ quần áo (LIFO)",
       },
     });
   }
@@ -616,7 +607,7 @@ export class StackEngine {
     return [...this.items];
   }
 
-  setValues(vals: number[]) {
-    this.items = [...vals];
+  setValues(values: number[]) {
+    this.items = [...values];
   }
 }

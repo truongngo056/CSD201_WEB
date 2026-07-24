@@ -33,6 +33,101 @@ const Y = 220;
 const GAP = 220;
 const START_X = 140;
 
+/**
+ * Circular layout — HEAD is anchored at a single fixed point forever.
+ * Adding nodes only expands the other vertices (radius grows / angles re-spread).
+ *   1 → head only
+ *   2 → horizontal (head fixed · peer to the right)
+ *   3 → triangle, 4 → diamond, 5 → pentagon, …
+ */
+const HEAD_X = 360;
+const HEAD_Y = 130;
+/** Min spacing between node centers (avoid overlap) */
+const CIRC_MIN_CHORD = 155;
+
+function circularRadius(count: number): number {
+  if (count <= 1) return 0;
+  if (count === 2) return CIRC_MIN_CHORD; // head → peer distance (horizontal)
+  // Regular n-gon: chord = 2 R sin(π/n) ≥ CIRC_MIN_CHORD
+  const R = CIRC_MIN_CHORD / (2 * Math.sin(Math.PI / count));
+  return Math.max(120, R);
+}
+
+/** Geometric center of the current polygon (for edge bowing). Head stays above it. */
+function circularCenter(count: number): { x: number; y: number } {
+  if (count <= 1) return { x: HEAD_X, y: HEAD_Y };
+  if (count === 2) {
+    // Midpoint of the horizontal pair
+    return { x: HEAD_X + circularRadius(2), y: HEAD_Y };
+  }
+  const R = circularRadius(count);
+  // Center sits R below the fixed head so vertex 0 is always (HEAD_X, HEAD_Y)
+  return { x: HEAD_X, y: HEAD_Y + R };
+}
+
+/**
+ * Position of list index i in an n-node circular list.
+ * Index 0 (HEAD) is ALWAYS (HEAD_X, HEAD_Y) — never moves when n changes.
+ */
+function circularPos(count: number, index: number): { x: number; y: number } {
+  if (count <= 0) return { x: HEAD_X, y: HEAD_Y };
+  // Head slot is fixed for every size
+  if (index === 0 || count === 1) return { x: HEAD_X, y: HEAD_Y };
+
+  if (count === 2) {
+    // Horizontal: only the non-head node expands to the right
+    return { x: HEAD_X + circularRadius(2) * 2, y: HEAD_Y };
+  }
+
+  const R = circularRadius(count);
+  const c = circularCenter(count);
+  // Vertex 0 at top (-π/2); others fan out as n grows — head stays put
+  const angle = -Math.PI / 2 + (2 * Math.PI * index) / count;
+  return {
+    x: Math.round(c.x + R * Math.cos(angle)),
+    y: Math.round(c.y + R * Math.sin(angle)),
+  };
+}
+
+/**
+ * Park a floating newNode outside the current shape so it never covers existing nodes.
+ * addLast  → near the future last slot of the (n+1)-gon, pushed outward
+ * addFirst → above the fixed head (outside)
+ */
+function circularNewNodePos(
+  count: number,
+  side: "left" | "right"
+): { x: number; y: number } {
+  if (count === 0) {
+    // Empty → will become the single head
+    return { x: HEAD_X, y: HEAD_Y + 140 };
+  }
+
+  if (side === "left") {
+    // addFirst: park above fixed head (head chip is also above — offset left-up)
+    return { x: HEAD_X - 130, y: HEAD_Y - 110 };
+  }
+
+  // addLast
+  if (count === 1) {
+    // Becoming horizontal pair — park to the right of head, clear of head
+    return { x: HEAD_X + CIRC_MIN_CHORD * 2 + 40, y: HEAD_Y };
+  }
+
+  // Future last index in (count+1)-gon, then push further outward from that center
+  const nextCount = count + 1;
+  const future = circularPos(nextCount, count); // last index of larger gon
+  const c = circularCenter(nextCount);
+  const ox = future.x - c.x;
+  const oy = future.y - c.y;
+  const olen = Math.hypot(ox, oy) || 1;
+  const R = circularRadius(nextCount) + 95;
+  return {
+    x: Math.round(c.x + (ox / olen) * R),
+    y: Math.round(c.y + (oy / olen) * R),
+  };
+}
+
 export class LinkedListEngine {
   kind: ListKind;
   nodes: LLNode[] = [];
@@ -81,6 +176,11 @@ export class LinkedListEngine {
       prevTo?: string | null;
       /** place left of list (addFirst) or right (addLast) */
       side?: "left" | "right";
+      /**
+       * Circular only: expand polygon to n+1 now and seat newNode in its final slot.
+       * Existing nodes re-spread; next step only rewires arrows (no position jump).
+       */
+      expand?: boolean;
     };
     /** curr pointer on node id */
     curr?: string | null;
@@ -93,6 +193,8 @@ export class LinkedListEngine {
     action?: VizAction;
     /** hide automatic null terminator */
     hideNull?: boolean;
+    /** circular: hide last→head loop (mid-rewire) */
+    hideLoop?: boolean;
     /** mark node as removed (ghost) */
     removedId?: string;
     /** custom node sublabels id -> text */
@@ -137,17 +239,20 @@ export class LinkedListEngine {
         }
       }
 
+      // Singly/doubly: fixed horizontal row.
+      // Circular: regular polygon; with newNode.expand → already layout as n+1.
       let nx = START_X + i * GAP;
       let ny = Y;
-
       if (this.kind === "circular") {
-        const count = Math.max(1, this.nodes.length);
-        const R = Math.max(140, count * 35);
-        const CX = 350;
-        const CY = 240;
-        const angle = -Math.PI / 2 + (2 * Math.PI * i) / count;
-        nx = Math.round(CX + R * Math.cos(angle));
-        ny = Math.round(CY + R * Math.sin(angle));
+        const expand = Boolean(opts.newNode?.expand);
+        const total = expand ? this.nodes.length + 1 : this.nodes.length;
+        // addFirst (side left): insert at slot 0 → existing nodes shift to i+1
+        // addLast  (side right): insert at slot n → existing keep indices 0..n-1
+        const insertAt0 = expand && (opts.newNode?.side ?? "left") === "left";
+        const layoutIdx = insertAt0 ? i + 1 : i;
+        const p = circularPos(Math.max(1, total), layoutIdx);
+        nx = p.x;
+        ny = p.y;
       }
 
       nodes.push({
@@ -191,14 +296,14 @@ export class LinkedListEngine {
       }
     }
 
-    // circular loop
-    if (this.kind === "circular" && this.nodes.length > 0) {
+    // Circular return edge: last → head (closes the polygon; canvas draws outward arcs)
+    if (this.kind === "circular" && this.nodes.length > 0 && !opts.hideLoop) {
       edges.push({
         id: "e-loop",
         from: this.nodes[this.nodes.length - 1].id,
         to: this.nodes[0].id,
         type: "loop",
-        label: "next → HEAD",
+        label: this.nodes.length === 1 ? "next → self" : "next → HEAD",
         highlighted: opts.edgeHl?.includes("e-loop"),
         animated: opts.edgeHl?.includes("e-loop"),
       });
@@ -243,7 +348,7 @@ export class LinkedListEngine {
       }
     }
 
-    // Empty list: show head → null explicitly
+    // Empty list: head pointer → null (chip only, no text label)
     if (this.nodes.length === 0 && !opts.newNode) {
       nodes.push({
         id: "null-empty",
@@ -262,26 +367,16 @@ export class LinkedListEngine {
         x: START_X,
         y: Y - 70,
         highlighted: true,
-        display: "null",
-      });
-      annotations.push({
-        id: "ann-empty",
-        text: "head → null",
-        x: START_X + 80,
-        y: Y + 55,
-        kind: "null",
-        highlighted: true,
       });
     }
 
-    // HEAD / TAIL external pointers
+    // HEAD / TAIL external pointers — name only; chip flies to target node
     if (this.nodes.length > 0) {
       pointers.push({
         id: "ptr-head",
         name: "head",
         targetId: this.nodes[0].id,
         highlighted: hl.has(this.nodes[0].id) || opts.edgeHl?.includes("head"),
-        display: String(this.nodes[0].value),
       });
       if (this.kind === "doubly" || this.kind === "circular") {
         const t = this.nodes[this.nodes.length - 1];
@@ -290,12 +385,11 @@ export class LinkedListEngine {
           name: "tail",
           targetId: t.id,
           highlighted: opts.edgeHl?.includes("tail"),
-          display: String(t.value),
         });
       }
     }
 
-    // curr / prev pointers
+    // curr / prev pointers — name only (arrow points at node)
     if (opts.curr) {
       if (opts.curr === "null") {
         pointers.push({
@@ -305,7 +399,6 @@ export class LinkedListEngine {
           x: START_X + this.nodes.length * GAP,
           y: Y - 70,
           highlighted: true,
-          display: "null",
         });
       } else {
         pointers.push({
@@ -313,9 +406,6 @@ export class LinkedListEngine {
           name: "curr",
           targetId: opts.curr,
           highlighted: true,
-          display: String(
-            this.nodes.find((n) => n.id === opts.curr)?.value ?? "?"
-          ),
         });
       }
     }
@@ -325,34 +415,36 @@ export class LinkedListEngine {
         name: "prev",
         targetId: opts.prev,
         highlighted: true,
-        display: String(
-          this.nodes.find((n) => n.id === opts.prev)?.value ?? "?"
-        ),
       });
     }
 
-    // Floating newNode — same row as list, LEFT (addFirst) or RIGHT (addLast)
-    // Never stacked above HEAD (that caused head chip to sit on newNode)
-    // Layout addFirst:  [newNode] --next--> [HEAD] --next--> ...
-    // Layout addLast:   ... --next--> [TAIL] --next--> [newNode]
+    // Floating newNode
+    // - Singly/doubly: same row left (addFirst) / right (addLast)
+    // - Circular + expand: seat at final polygon slot while others re-spread
     if (opts.newNode) {
       const side = opts.newNode.side ?? "left";
       let NEW_X: number;
       let NEW_Y: number;
 
       if (this.kind === "circular") {
-        const count = Math.max(1, this.nodes.length);
-        const R = Math.max(140, count * 35);
-        const CX = 350;
-        const CY = 240;
-        NEW_X = CX - R - 140;
-        NEW_Y = CY - 40;
+        if (opts.newNode.expand) {
+          // Final seat in the (n+1)-gon — no overlap with expanded peers
+          const total = this.nodes.length + 1;
+          const slot = side === "left" ? 0 : this.nodes.length;
+          const p = circularPos(total, slot);
+          NEW_X = p.x;
+          NEW_Y = p.y;
+        } else {
+          const p = circularNewNodePos(this.nodes.length, side);
+          NEW_X = p.x;
+          NEW_Y = p.y;
+        }
       } else {
-        NEW_Y = Y - 130;
+        NEW_Y = Y;
         NEW_X =
           side === "right"
             ? START_X + this.nodes.length * GAP
-            : START_X - 60;
+            : START_X - GAP;
       }
 
       nodes.push({
@@ -372,18 +464,31 @@ export class LinkedListEngine {
         name: "newNode",
         targetId: opts.newNode.id,
         highlighted: true,
-        display: String(opts.newNode.value),
       });
 
       if (opts.newNode.nextTo === null) {
-        // Place null-new to the LEFT of newNode when side === "left"
-        // so it stays far away from the head node on the right!
-        const nullX = side === "left" ? NEW_X - 160 : NEW_X + 160;
+        // Park NULL slightly outside newNode (not on other nodes)
+        let nullX: number;
+        let nullY: number;
+        if (this.kind === "circular") {
+          const total = opts.newNode.expand
+            ? this.nodes.length + 1
+            : Math.max(1, this.nodes.length);
+          const c = circularCenter(total);
+          const dx = NEW_X - c.x;
+          const dy = NEW_Y - c.y;
+          const dl = Math.hypot(dx, dy) || 1;
+          nullX = Math.round(NEW_X + (dx / dl) * 70);
+          nullY = Math.round(NEW_Y + (dy / dl) * 70);
+        } else {
+          nullX = side === "left" ? NEW_X - 160 : NEW_X + 160;
+          nullY = NEW_Y;
+        }
         nodes.push({
           id: "null-new",
           value: "∅",
           x: nullX,
-          y: NEW_Y,
+          y: nullY,
           role: "null",
           label: undefined,
           highlighted: true,
@@ -442,6 +547,21 @@ export class LinkedListEngine {
           this.kind !== "singly"
             ? this.nodes[this.nodes.length - 1]?.value ?? null
             : null,
+        // Used by canvas to bow circular edges outward from the polygon
+        ...(this.kind === "circular"
+          ? (() => {
+              const n = this.nodes.length;
+              const total =
+                opts.newNode?.expand ? n + 1 : Math.max(1, n);
+              const c = circularCenter(total);
+              return {
+                centerX: c.x,
+                centerY: c.y,
+                headX: HEAD_X,
+                headY: HEAD_Y,
+              };
+            })()
+          : {}),
       },
     };
   }
@@ -489,6 +609,8 @@ export class LinkedListEngine {
     const steps: AnimationStep[] = [];
     const oldHead = this.nodes[0];
     const oldHeadVal = oldHead?.value ?? "null";
+    const oldTail =
+      this.nodes.length > 0 ? this.nodes[this.nodes.length - 1] : null;
 
     steps.push(
       step({
@@ -511,29 +633,119 @@ export class LinkedListEngine {
 
     const node: LLNode = { id: nid(), value };
 
-    // 1) Create newNode floating
+    // ── Circular: expand + seat newNode at head slot; next step only arrows ──
+    if (this.kind === "circular" && this.nodes.length > 0) {
+      steps.push(
+        step({
+          type: "create",
+          en: `newNode = new Node(${value}) — expand ring, seat at HEAD slot`,
+          vi: `newNode = new Node(${value}) — giãn vòng, đặt vào slot HEAD`,
+          data: this.frame({
+            newNode: {
+              id: node.id,
+              value,
+              nextTo: null,
+              side: "left",
+              expand: true,
+            },
+            action: {
+              en: `Allocate newNode · peers re-spread (HEAD slot fixed)`,
+              vi: `Cấp phát newNode · node khác giãn (slot HEAD neo)`,
+              code: `Node newNode = new Node(${value});`,
+            },
+            edgeHl: ["e-loop"],
+          }),
+          codeLines: [1],
+          variables: this.vars([
+            v("newNode.data", value, true),
+            v("newNode.next", "null", true),
+          ]),
+          duration: 1200,
+        })
+      );
+
+      steps.push(
+        step({
+          type: "link",
+          en: `newNode.next = old HEAD; tail.next = newNode; head = newNode`,
+          vi: `newNode.next = HEAD cũ; tail.next = newNode; head = newNode`,
+          data: this.frame({
+            newNode: {
+              id: node.id,
+              value,
+              nextTo: oldHead!.id,
+              side: "left",
+              expand: true,
+            },
+            hideLoop: true,
+            pendingEdges: oldTail
+              ? [
+                  {
+                    id: "e-tail-new",
+                    from: oldTail.id,
+                    to: node.id,
+                    type: "next",
+                    label: "next ★",
+                    highlighted: true,
+                    animated: true,
+                    dashed: true,
+                  },
+                ]
+              : undefined,
+            edgeHl: ["e-new-next", "e-tail-new", "head"],
+            highlight: [node.id, oldHead!.id],
+            active: node.id,
+            action: {
+              en: `Update next / head pointers only`,
+              vi: `Chỉ cập nhật mũi tên next / head`,
+              code: `n.next = head; tail.next = n; head = n;`,
+            },
+          }),
+          codeLines: [2, 3, 4],
+          variables: this.vars([
+            v("newNode.next", oldHeadVal, true),
+            v("head", value, true),
+          ]),
+          duration: 1200,
+        })
+      );
+
+      this.nodes.unshift(node);
+      steps.push(
+        step({
+          type: "done",
+          en: `addFirst done · ring size = ${this.nodes.length}`,
+          vi: `addFirst xong · vòng size = ${this.nodes.length}`,
+          data: this.frame({
+            highlight: [node.id],
+            active: node.id,
+            edgeHl: ["head", "e-loop"],
+            action: {
+              en: `HEAD updated · cycle closed`,
+              vi: `HEAD đã cập nhật · vòng khép lại`,
+              code: `size++; // ${this.nodes.length}`,
+            },
+          }),
+          codeLines: [5],
+          variables: this.vars([], ["head", "size", "list", "tail"]),
+        })
+      );
+      return steps;
+    }
+
+    // ── Singly / doubly / empty ──
     steps.push(
       step({
         type: "create",
         en: `Create newNode = new Node(${value}) — next is still null`,
         vi: `Tạo newNode = new Node(${value}) — next vẫn null`,
         data: this.frame({
-          newNode: { id: node.id, value, nextTo: null },
+          newNode: { id: node.id, value, nextTo: null, side: "left" },
           action: {
             en: `Allocate newNode on heap`,
             vi: `Cấp phát newNode trên heap`,
             code: `Node newNode = new Node(${value});`,
           },
-          annotations: [
-            {
-              id: "a1",
-              text: `newNode.data = ${value}`,
-              x: START_X - GAP - 20,
-              y: Y + 95,
-              kind: "assign",
-              highlighted: true,
-            },
-          ],
           edgeHl: ["e-new-null"],
         }),
         codeLines: [1],
@@ -548,7 +760,6 @@ export class LinkedListEngine {
       })
     );
 
-    // 2) newNode.next = head
     steps.push(
       step({
         type: "link",
@@ -559,6 +770,7 @@ export class LinkedListEngine {
             id: node.id,
             value,
             nextTo: oldHead?.id ?? null,
+            side: "left",
           },
           edgeHl: oldHead ? ["e-new-next"] : ["e-new-null"],
           action: {
@@ -566,17 +778,6 @@ export class LinkedListEngine {
             vi: `Nối newNode.next → head cũ`,
             code: `newNode.next = head; // → ${oldHeadVal}`,
           },
-          annotations: [
-            {
-              id: "a2",
-              text: `newNode.next → ${oldHeadVal}`,
-              // Midway between newNode (left) and head — below the edge
-              x: START_X - GAP / 2 - 10,
-              y: Y + 95,
-              kind: "link",
-              highlighted: true,
-            },
-          ],
           highlight: oldHead ? [oldHead.id] : ["null-empty", "null-end"],
         }),
         codeLines: [2],
@@ -591,7 +792,6 @@ export class LinkedListEngine {
       })
     );
 
-    // 3) doubly: head.prev = newNode
     if (this.kind === "doubly" && oldHead) {
       steps.push(
         step({
@@ -603,6 +803,7 @@ export class LinkedListEngine {
               id: node.id,
               value,
               nextTo: oldHead.id,
+              side: "left",
             },
             pendingEdges: [
               {
@@ -623,16 +824,6 @@ export class LinkedListEngine {
               vi: `Gán prev của head cũ → newNode`,
               code: `if (head != null) head.prev = newNode;`,
             },
-            annotations: [
-              {
-                id: "a3",
-                text: `[${oldHeadVal}].prev → ${value}`,
-                x: START_X + 80,
-                y: Y + 70,
-                kind: "link",
-                highlighted: true,
-              },
-            ],
           }),
           codeLines: [3],
           pseudoLines: [3],
@@ -646,7 +837,6 @@ export class LinkedListEngine {
       );
     }
 
-    // 4) head = newNode
     this.nodes.unshift(node);
     steps.push(
       step({
@@ -662,16 +852,6 @@ export class LinkedListEngine {
             vi: `Cập nhật con trỏ head`,
             code: `head = newNode; size++;`,
           },
-          annotations: [
-            {
-              id: "a4",
-              text: `head → [${value}]`,
-              x: START_X,
-              y: Y - 100,
-              kind: "assign",
-              highlighted: true,
-            },
-          ],
           extraLabels: { [node.id]: "newNode" },
         }),
         codeLines: this.kind === "doubly" ? [4, 5] : [3, 4],
@@ -729,6 +909,115 @@ export class LinkedListEngine {
     );
 
     const newId = nid();
+
+    // ── Circular (non-empty): create expands polygon + seats newNode;
+    //    next step only rewires arrows (positions already final).
+    if (this.kind === "circular" && this.nodes.length > 0) {
+      const tail = this.nodes[this.nodes.length - 1];
+      const head = this.nodes[0];
+
+      steps.push(
+        step({
+          type: "create",
+          en: `newNode = new Node(${value}) — expand ring, seat newNode`,
+          vi: `newNode = new Node(${value}) — giãn vòng, đặt newNode vào chỗ`,
+          data: this.frame({
+            newNode: {
+              id: newId,
+              value,
+              nextTo: null,
+              side: "right",
+              expand: true,
+            },
+            highlight: [tail.id, head.id],
+            action: {
+              en: `Allocate newNode · peers re-spread (head fixed)`,
+              vi: `Cấp phát newNode · các node khác giãn ra (head neo)`,
+              code: `Node newNode = new Node(${value});`,
+            },
+            edgeHl: ["e-loop"],
+          }),
+          codeLines: [1],
+          pseudoLines: [1],
+          codeSnippet: `Node newNode = new Node(${value});`,
+          variables: this.vars([
+            v("newNode.data", value, true),
+            v("newNode.next", "null", true),
+            v("tail", tail.value),
+          ]),
+          duration: 1200,
+        })
+      );
+
+      // Rewire arrows only — positions stay (already n+1 layout)
+      steps.push(
+        step({
+          type: "link",
+          en: `newNode.next = HEAD; tail.next = newNode; tail = newNode`,
+          vi: `newNode.next = HEAD; tail.next = newNode; tail = newNode`,
+          data: this.frame({
+            newNode: {
+              id: newId,
+              value,
+              nextTo: head.id,
+              side: "right",
+              expand: true,
+            },
+            hideLoop: true,
+            pendingEdges: [
+              {
+                id: "e-tail-new",
+                from: tail.id,
+                to: newId,
+                type: "next",
+                label: "next ★",
+                highlighted: true,
+                animated: true,
+                dashed: true,
+              },
+            ],
+            edgeHl: ["e-new-next", "e-tail-new"],
+            highlight: [newId, tail.id, head.id],
+            active: newId,
+            action: {
+              en: `Update next pointers only`,
+              vi: `Chỉ cập nhật mũi tên next`,
+              code: `n.next = head; tail.next = n; tail = n;`,
+            },
+          }),
+          codeLines: [2, 3, 4, 5, 6],
+          variables: this.vars([
+            v("newNode.next", head.value, true),
+            v("tail.next", value, true),
+          ]),
+          duration: 1200,
+        })
+      );
+
+      this.nodes.push({ id: newId, value });
+      steps.push(
+        step({
+          type: "done",
+          en: `addLast done · ring size = ${this.nodes.length}`,
+          vi: `addLast xong · vòng size = ${this.nodes.length}`,
+          data: this.frame({
+            highlight: [newId],
+            active: newId,
+            edgeHl: ["tail", "e-loop"],
+            action: {
+              en: `Tail updated · cycle closed`,
+              vi: `Tail đã cập nhật · vòng khép lại`,
+              code: `size++; // ${this.nodes.length}`,
+            },
+          }),
+          codeLines: [7],
+          variables: this.vars([], ["tail", "size", "list"]),
+        })
+      );
+      return steps;
+    }
+
+    // ── Singly / doubly / empty create ──
     steps.push(
       step({
         type: "create",
@@ -741,16 +1030,6 @@ export class LinkedListEngine {
             vi: `Cấp phát newNode`,
             code: `Node newNode = new Node(${value});`,
           },
-          annotations: [
-            {
-              id: "c1",
-              text: `newNode · next→null`,
-              x: START_X + 40,
-              y: Y - 140,
-              kind: "assign",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [1],
         pseudoLines: [1],
@@ -763,35 +1042,6 @@ export class LinkedListEngine {
     );
 
     if (this.nodes.length === 0) {
-      steps.push(
-        step({
-          type: "check",
-          en: "head == null → empty list",
-          vi: "head == null → danh sách rỗng",
-          data: this.frame({
-            newNode: { id: newId, value, nextTo: null, side: "right" },
-            action: {
-              en: `Branch: empty list`,
-              vi: `Nhánh: list rỗng`,
-              code: `if (head == null)`,
-            },
-            annotations: [
-              {
-                id: "c2",
-                text: "head == null → true",
-                x: START_X + 80,
-                y: Y + 60,
-                kind: "null",
-                highlighted: true,
-              },
-            ],
-          }),
-          codeLines: [2],
-          pseudoLines: [2],
-          codeSnippet: `if (head == null)`,
-          variables: this.vars([v("head == null", true, true)]),
-        })
-      );
       this.nodes.push({ id: newId, value });
       steps.push(
         step({
@@ -807,94 +1057,11 @@ export class LinkedListEngine {
               vi: `Gán head = newNode`,
               code: `head = newNode;`,
             },
-            annotations: [
-              {
-                id: "c3",
-                text: `head → [${value}]`,
-                x: START_X,
-                y: Y - 100,
-                kind: "assign",
-                highlighted: true,
-              },
-            ],
           }),
           codeLines: [3],
           pseudoLines: [3],
           codeSnippet: `head = newNode;`,
           variables: this.vars([], ["head", "size", "list", "tail"]),
-        })
-      );
-    } else if (this.kind === "circular") {
-      const tail = this.nodes[this.nodes.length - 1];
-      const head = this.nodes[0];
-      steps.push(
-        step({
-          type: "read",
-          en: `tail = [${tail.value}], head = tail.next = [${head.value}]`,
-          vi: `tail = [${tail.value}], head = tail.next = [${head.value}]`,
-          data: this.frame({
-            highlight: [tail.id, head.id],
-            active: tail.id,
-            edgeHl: ["e-loop", "tail"],
-            action: {
-              en: `Use tail to find head in O(1)`,
-              vi: `Dùng tail để lấy head O(1)`,
-              code: `n.next = tail.next; // head`,
-            },
-          }),
-          codeLines: [2, 3],
-          variables: this.vars([
-            v("tail", tail.value, true),
-            v("head", head.value),
-          ]),
-        })
-      );
-      steps.push(
-        step({
-          type: "link",
-          en: `newNode.next = HEAD; tail.next = newNode; tail = newNode`,
-          vi: `newNode.next = HEAD; tail.next = newNode; tail = newNode`,
-          data: this.frame({
-            newNode: { id: newId, value, nextTo: head.id, side: "right" },
-            edgeHl: ["e-new-next", "e-loop"],
-            action: {
-              en: `Insert into cycle after tail`,
-              vi: `Chèn vào vòng sau tail`,
-              code: `tail.next = n; tail = n;`,
-            },
-            annotations: [
-              {
-                id: "c4",
-                text: `[${tail.value}].next → ${value} → HEAD`,
-                x: START_X + (this.nodes.length - 1) * GAP,
-                y: Y + 75,
-                kind: "link",
-                highlighted: true,
-              },
-            ],
-          }),
-          codeLines: [4, 5, 6],
-          variables: this.vars([v("newNode.next", head.value, true)]),
-        })
-      );
-      this.nodes.push({ id: newId, value });
-      steps.push(
-        step({
-          type: "assign",
-          en: `tail now → [${value}]`,
-          vi: `tail hiện → [${value}]`,
-          data: this.frame({
-            highlight: [newId],
-            active: newId,
-            edgeHl: ["tail", "e-loop"],
-            action: {
-              en: `Update tail pointer`,
-              vi: `Cập nhật con trỏ tail`,
-              code: `tail = n; size++;`,
-            },
-          }),
-          codeLines: [6, 7],
-          variables: this.vars([], ["tail", "size", "list"]),
         })
       );
     } else if (this.kind === "doubly") {
@@ -936,7 +1103,7 @@ export class LinkedListEngine {
                 id: "d1",
                 text: `[${tail.value}] ⇄ newNode(${value})`,
                 x: START_X + (this.nodes.length - 0.5) * GAP,
-                y: Y - 100,
+                y: Y + 95,
                 kind: "link",
                 highlighted: true,
               },
@@ -1090,7 +1257,7 @@ export class LinkedListEngine {
                 id: "link",
                 text: `[${last.value}].next → ${value}`,
                 x: START_X + (this.nodes.length - 0.5) * GAP,
-                y: Y - 100,
+                y: Y + 95,
                 kind: "link",
                 highlighted: true,
               },
@@ -1227,14 +1394,6 @@ export class LinkedListEngine {
                 x: START_X,
                 y: Y - 100,
                 kind: "warn",
-                highlighted: true,
-              },
-              {
-                id: "r2",
-                text: `head → ${nextVal}`,
-                x: START_X + GAP,
-                y: Y - 100,
-                kind: "assign",
                 highlighted: true,
               },
             ],
@@ -1830,16 +1989,6 @@ export class LinkedListEngine {
             vi: `Mọi tham chiếu về NULL`,
             code: `head = null; size = 0;`,
           },
-          annotations: [
-            {
-              id: "clr",
-              text: "head → null",
-              x: START_X + 80,
-              y: Y + 60,
-              kind: "null",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [1, 2],
         variables: this.vars([], ["head", "size", "list", "tail"]),

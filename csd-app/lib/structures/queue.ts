@@ -105,7 +105,6 @@ export class QueueEngine {
           x: 120,
           y: 100,
           highlighted: true,
-          display: "null",
         },
         {
           id: "ptr-rear",
@@ -114,31 +113,21 @@ export class QueueEngine {
           x: 280,
           y: 100,
           highlighted: true,
-          display: "null",
         }
       );
-      annotations.push({
-        id: "empty",
-        text: "front → null , rear → null",
-        x: 200,
-        y: 250,
-        kind: "null",
-        highlighted: true,
-      });
     } else {
+      // Name only — chips fly to front/rear nodes on update
       pointers.push({
         id: "ptr-front",
         name: "front",
         targetId: "q0",
         highlighted: hl === "front" || hl === "both",
-        display: String(this.items[0]),
       });
       pointers.push({
         id: "ptr-rear",
         name: "rear",
         targetId: `q${this.items.length - 1}`,
         highlighted: hl === "rear" || hl === "both",
-        display: String(this.items[this.items.length - 1]),
       });
     }
 
@@ -160,7 +149,6 @@ export class QueueEngine {
         name: "value",
         targetId: "q-new",
         highlighted: true,
-        display: String(opts.floating.value),
       });
       if (this.items.length > 0) {
         edges.push({
@@ -406,19 +394,6 @@ export class QueueEngine {
             vi: `FRONT dời sang phần tử kế`,
             code: `front = front + 1; size--;`,
           },
-          annotations: [
-            {
-              id: "adv",
-              text:
-                this.items.length > 0
-                  ? `new front = ${this.items[0]}`
-                  : `front → null`,
-              x: 150,
-              y: 260,
-              kind: this.items.length ? "link" : "null",
-              highlighted: true,
-            },
-          ],
         }),
         codeLines: [3, 4],
         variables: this.vars(
